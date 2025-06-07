@@ -270,7 +270,7 @@ impl IdentityDisk {
         );
 
         for (i, chunk) in embeds.chunks(manifest.embedding.dim).enumerate() {
-            hnsw.insert((chunk, i));
+            hnsw.insert_slice((chunk, i));
         }
 
         Ok(Self { manifest, texts, metas, _embeds: embeds, hnsw })

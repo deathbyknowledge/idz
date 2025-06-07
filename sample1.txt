@@ -1,0 +1,6 @@
+This is the first sample document for testing the IDZ CLI tool.
+It contains multiple lines of text that will be chunked and embedded.
+Each line represents a potential chunk in the vector database.
+The embedding model will process these chunks for similarity search.
+Vector databases are useful for semantic search applications.
+They allow finding similar content based on meaning rather than exact matches.

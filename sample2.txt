@@ -1,0 +1,6 @@
+Machine learning algorithms can process natural language text.
+Neural networks excel at understanding context and semantics.
+Large language models have revolutionized text processing.
+Transformers architecture enables efficient parallel processing.
+Attention mechanisms help models focus on relevant parts of input.
+Self-supervised learning reduces the need for labeled data.

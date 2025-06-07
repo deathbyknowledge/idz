@@ -146,6 +146,7 @@ struct App {
     file_path: PathBuf,
     current_view: AppView,
     list_state: ListState,
+    search_list_state: ListState, // Added for search results
     selected_chunk: Option<usize>,
     search_mode: bool,
     search_query: String,
@@ -170,6 +171,7 @@ impl App {
             file_path,
             current_view: AppView::Overview,
             list_state,
+            search_list_state: ListState::default(), // Initialize search list state
             selected_chunk: None,
             search_mode: false,
             search_query: String::new(),
@@ -178,35 +180,66 @@ impl App {
     }
     
     fn next_chunk(&mut self) {
+        let count = self.get_chunk_count();
+        if count == 0 { return; }
         let i = match self.list_state.selected() {
-            Some(i) => {
-                if i >= self.get_chunk_count() - 1 {
-                    0
-                } else {
-                    i + 1
-                }
-            }
+            Some(i) => if i >= count - 1 { 0 } else { i + 1 },
             None => 0,
         };
         self.list_state.select(Some(i));
     }
 
     fn previous_chunk(&mut self) {
+        let count = self.get_chunk_count();
+        if count == 0 { return; }
         let i = match self.list_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.get_chunk_count() - 1
-                } else {
-                    i - 1
-                }
-            }
+            Some(i) => if i == 0 { count - 1 } else { i - 1 },
             None => 0,
         };
         self.list_state.select(Some(i));
     }
+
+    fn next_search_result(&mut self) {
+        let count = self.search_results.len();
+        if count == 0 { return; }
+        let i = match self.search_list_state.selected() {
+            Some(i) => if i >= count - 1 { 0 } else { i + 1 },
+            None => 0,
+        };
+        self.search_list_state.select(Some(i));
+    }
+
+    fn previous_search_result(&mut self) {
+        let count = self.search_results.len();
+        if count == 0 { return; }
+        let i = match self.search_list_state.selected() {
+            Some(i) => if i == 0 { count - 1 } else { i - 1 },
+            None => 0,
+        };
+        self.search_list_state.select(Some(i));
+    }
     
     fn get_chunk_count(&self) -> usize {
         self.disk.manifest.chunks.count
+    }
+
+    fn perform_search(&mut self) {
+        if self.search_query.is_empty() {
+            self.search_results.clear();
+            return;
+        }
+        
+        // Generate a dummy query embedding, just like in create_idz_file
+        let dim = self.disk.manifest.embedding.dim;
+        let query_embedding: Vec<f32> = (0..dim).map(|_| rand::random::<f32>()).collect();
+        
+        // Perform the search (we'll ask for the top 10 results)
+        self.search_results = self.disk.search(&query_embedding, 10);
+        
+        // Select the first result if any
+        if !self.search_results.is_empty() {
+            self.search_list_state.select(Some(0));
+        }
     }
 }
 
@@ -216,51 +249,64 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
 
         if let Event::Key(key) = event::read()? {
             if key.kind == KeyEventKind::Press {
+                // Global keybindings
                 match key.code {
                     KeyCode::Char('q') => return Ok(()),
                     KeyCode::Char('1') => app.current_view = AppView::Overview,
                     KeyCode::Char('2') => app.current_view = AppView::ChunkList,
                     KeyCode::Char('3') => app.current_view = AppView::Search,
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if app.current_view == AppView::ChunkList {
-                            app.next_chunk();
+                    _ => {}
+                }
+
+                // View-specific keybindings
+                if app.search_mode {
+                     match key.code {
+                        KeyCode::Enter => {
+                            app.search_mode = false;
+                            app.perform_search();
                         }
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        if app.current_view == AppView::ChunkList {
-                            app.previous_chunk();
-                        }
-                    }
-                    KeyCode::Enter => {
-                        if app.current_view == AppView::ChunkList {
-                            app.selected_chunk = app.list_state.selected();
-                            app.current_view = AppView::ChunkDetail;
-                        }
-                    }
-                    KeyCode::Esc => {
-                        if app.current_view == AppView::ChunkDetail {
-                            app.current_view = AppView::ChunkList;
-                        } else if app.search_mode {
+                        KeyCode::Char(c) => app.search_query.push(c),
+                        KeyCode::Backspace => { app.search_query.pop(); },
+                        KeyCode::Esc => {
                             app.search_mode = false;
                             app.search_query.clear();
                         }
+                        _ => {}
                     }
-                    KeyCode::Char('/') => {
-                        if app.current_view == AppView::Search {
-                            app.search_mode = true;
+                } else {
+                    match app.current_view {
+                        AppView::ChunkList => match key.code {
+                            KeyCode::Down | KeyCode::Char('j') => app.next_chunk(),
+                            KeyCode::Up | KeyCode::Char('k') => app.previous_chunk(),
+                            KeyCode::Enter => {
+                                app.selected_chunk = app.list_state.selected();
+                                app.current_view = AppView::ChunkDetail;
+                            }
+                            _ => {}
+                        },
+                        AppView::ChunkDetail => match key.code {
+                            KeyCode::Esc => app.current_view = AppView::ChunkList,
+                            _ => {}
+                        },
+                        AppView::Search => match key.code {
+                            KeyCode::Char('/') => {
+                                app.search_mode = true;
+                                app.search_results.clear(); // Clear old results
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => app.next_search_result(),
+                            KeyCode::Up | KeyCode::Char('k') => app.previous_search_result(),
+                            KeyCode::Enter => {
+                                if let Some(selected_idx) = app.search_list_state.selected() {
+                                    if let Some((chunk_id, _)) = app.search_results.get(selected_idx) {
+                                        app.selected_chunk = Some(*chunk_id);
+                                        app.current_view = AppView::ChunkDetail;
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
+                        _ => {}
                     }
-                    KeyCode::Char(c) => {
-                        if app.search_mode {
-                            app.search_query.push(c);
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        if app.search_mode {
-                            app.search_query.pop();
-                        }
-                    }
-                    _ => {}
                 }
             }
         }
@@ -284,11 +330,15 @@ fn ui(f: &mut Frame, app: &mut App) {
     f.render_widget(header, chunks[0]);
 
     // Footer with controls
-    let footer_text = match app.current_view {
-        AppView::Overview => "1: Overview | 2: Chunks | 3: Search | q: Quit",
-        AppView::ChunkList => "↑↓/jk: Navigate | Enter: View | 1: Overview | 3: Search | q: Quit",
-        AppView::ChunkDetail => "Esc: Back | 1: Overview | 2: Chunks | q: Quit",
-        AppView::Search => "/: Search | 1: Overview | 2: Chunks | q: Quit",
+    let footer_text = if app.search_mode {
+        "Enter: Search | Esc: Cancel"
+    } else {
+        match app.current_view {
+            AppView::Overview => "1: Overview | 2: Chunks | 3: Search | q: Quit",
+            AppView::ChunkList => "↑↓/jk: Navigate | Enter: View | 1: Overview | 3: Search | q: Quit",
+            AppView::ChunkDetail => "Esc: Back | 1: Overview | 2: Chunks | q: Quit",
+            AppView::Search => "/: Search | ↑↓/jk: Navigate Results | Enter: View Chunk | q: Quit",
+        }
     };
     let footer = Paragraph::new(footer_text)
         .block(Block::default().borders(Borders::ALL).title("Controls"));
@@ -344,8 +394,8 @@ fn render_chunk_list(f: &mut Frame, area: Rect, app: &mut App) {
     let items: Vec<ListItem> = (0..app.get_chunk_count())
         .map(|i| {
             let text = app.disk.chunk_text(i);
-            let preview = if text.len() > 60 {
-                format!("{}...", &text[..57])
+            let preview = if text.len() > 80 {
+                format!("{}...", &text[..77])
             } else {
                 text.to_string()
             };
@@ -398,19 +448,45 @@ fn render_search(f: &mut Frame, area: Rect, app: &mut App) {
         Style::default()
     };
     
-    let search_widget = Paragraph::new(format!("Search: {}", app.search_query))
+    // Add a blinking cursor effect
+    let query_display = if app.search_mode {
+        format!("Search: {}|", app.search_query)
+    } else {
+        format!("Search: {}", app.search_query)
+    };
+
+    let search_widget = Paragraph::new(query_display)
         .block(Block::default().borders(Borders::ALL).title("Semantic Search").border_style(search_style));
     f.render_widget(search_widget, chunks[0]);
 
-    // Search results placeholder
-    let results_text = if app.search_query.is_empty() {
-        "Press '/' to start searching. Enter search terms to find similar chunks.".to_string()
+    // Search results
+    if !app.search_results.is_empty() {
+        let items: Vec<ListItem> = app.search_results.iter().map(|(id, score)| {
+            let text = app.disk.chunk_text(*id);
+            let preview = if text.len() > 80 {
+                format!("{}...", text.chars().take(77).collect::<String>())
+            } else {
+                text.to_string()
+            };
+            ListItem::new(format!("ID: {:<4} | Score: {:.4} | {}", id, score, preview))
+        }).collect();
+
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title("Search Results"))
+            .highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
+            .highlight_symbol("> ");
+
+        f.render_stateful_widget(list, chunks[1], &mut app.search_list_state);
     } else {
-        "Search functionality requires embedding vectors - not implemented in this demo".to_string()
-    };
-    
-    let results_widget = Paragraph::new(results_text)
-        .block(Block::default().borders(Borders::ALL).title("Search Results"))
-        .wrap(Wrap { trim: true });
-    f.render_widget(results_widget, chunks[1]);
+        let results_text = if app.search_query.is_empty() {
+            "Press '/' to start searching. Press Enter to perform search."
+        } else {
+            "No results found."
+        };
+        
+        let results_widget = Paragraph::new(results_text)
+            .block(Block::default().borders(Borders::ALL).title("Search Results"))
+            .wrap(Wrap { trim: true });
+        f.render_widget(results_widget, chunks[1]);
+    }
 }
